@@ -1,0 +1,97 @@
+from fredapi import Fred
+import pandas as pd
+from datetime import datetime, date
+import matplotlib.pyplot as plt
+from matplotlib.ticker import StrMethodFormatter
+
+# start and end dates
+startDate = datetime.strptime("2025-01-01", "%Y-%m-%d").date()
+endDate = date.today()
+startDate_str = startDate.strftime("%Y-%m-%d")
+endDate_str = endDate.strftime("%Y-%m-%d")
+
+# time period used in interest rate parity calc
+T1m = 30/360
+T3m = 90/360
+T6m = 180/360
+T1y = 1
+
+# fred api key
+apiKey = 'YOURAPIKEY'
+fred = Fred(api_key=apiKey)
+
+# US data
+# 1 month t bill
+tbill1m = fred.get_series('TB4WK', observation_start=startDate_str, observation_end=endDate_str)
+# 3 month t bill
+tbill3m = fred.get_series('TB3MS', observation_start=startDate_str, observation_end=endDate_str)
+# 6 month t bill
+tbill6m = fred.get_series('TB6MS', observation_start=startDate_str, observation_end=endDate_str)
+# 1y t bill
+tbill1y = fred.get_series('TB1YR', observation_start=startDate_str, observation_end=endDate_str)
+# combine all bills into one df
+tBills = pd.concat([tbill1m, tbill3m, tbill6m, tbill1y], axis=1)
+tBills.columns = ['TBill1m', 'TBill3m', 'TBill6m', 'TBill1y']
+tBills.index.name = 'Date'
+
+# NZ data
+file_path = 'YOUR PATH TO: hb2-monthly-close.xlsx'
+# Read the Excel file into a DataFrame
+nzbills = pd.read_excel(file_path)
+# due to format, drop the first 4 rows
+nzbills = nzbills.iloc[4:]
+# drop columns from 2-4 and 9 onwards
+nzbills = nzbills.drop(columns = list(nzbills.columns[1:5]) + list(nzbills.columns)[9:])
+#rename columns
+nzbills.columns = ['Date', 'nz30dBill',
+                'nz60dBill', 'nz90dbill', 'nz1yBill']
+# match date formating
+nzbills['Date'] = pd.to_datetime(nzbills['Date'])
+# Convert to start of month to match
+nzbills['Date'] = nzbills['Date'].dt.to_period('M').dt.to_timestamp()
+# Set date as index
+nzbills.set_index('Date', inplace=True)
+
+# spot rate data
+spotRate = fred.get_series('DEXUSNZ', observation_start=startDate_str, observation_end=endDate_str)
+spotRate = spotRate.to_frame()
+spotRate.index.name = 'Date'
+spotRate.columns = ['SpotRate']
+
+# get data of latest month
+tBillsLast = tBills.iloc[-1]
+nzbillsLast = nzbills.iloc[-1]
+spotRateLast = spotRate.iloc[-1]
+
+# 1m forward rate calculation
+forwardRate1m = spotRateLast * (((1 + tBillsLast.iloc[0]/100)/ (1 + nzbillsLast.iloc[0]/100))**T1m)
+forwardRate3m = spotRateLast * (((1 + tBillsLast.iloc[1]/100)/ (1 + nzbillsLast.iloc[1]/100))**T3m)
+forwardRate6m = spotRateLast * (((1 + tBillsLast.iloc[2]/100)/ (1 + nzbillsLast.iloc[2]/100))**T6m)
+forwardRate1y = spotRateLast * (((1 + tBillsLast.iloc[3]/100)/ (1 + nzbillsLast.iloc[3]/100))**T1y)
+
+# store forward rates in single df
+forwardRates = pd.DataFrame({
+    'Maturity': ['1m', '3m', '6m', '1y'],
+    'ForwardRate': [forwardRate1m[0], forwardRate3m[0], forwardRate6m[0], forwardRate1y[0]]
+})
+
+# combine nz and us int rates to then calc the spread between them
+intSpread = pd.concat(
+    [
+        tBillsLast.reset_index(drop=True),
+        nzbillsLast.reset_index(drop=True),
+    ],
+    axis=1
+)
+intSpread.columns = [ 'US', 'NZ']
+intSpread.index = ["1m", "3m", "6m", "1y"]
+intSpread['Spread'] = pd.to_numeric(intSpread['US'] - intSpread['NZ']).round(2)
+
+# plot the forward rates
+plt.plot(forwardRates['Maturity'], forwardRates['ForwardRate'], marker='.')
+plt.xlabel('Settlement')
+plt.ylabel('Forward Rate (NZD/USD)')
+plt.title('1m - 1y Forward Rates (NZD/USD)')
+plt.gca().yaxis.set_major_formatter(StrMethodFormatter('${x:.4f}'))
+plt.tight_layout()
+plt.show()
